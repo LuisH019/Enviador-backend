@@ -26,6 +26,7 @@ EmailModel = email_model_module.EmailModel
 
 from api.exceptions import DailyLimitExceeded, RateLimitExceeded
 from api.utils.crypto import decrypt_password
+from api.validators import validate_email
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,15 @@ class EmailService:
                         'failed': failed_count,
                         'canceled': True
                     }
+
+                if not recipient or not validate_email(str(recipient).strip()):
+                    failed_count += 1
+                    if progress:
+                        try:
+                            progress({'index': i, 'email': recipient, 'status': 'failed', 'message': 'Destinatário inválido'})
+                        except Exception:
+                            pass
+                    continue
                 
                 attempt = 0
                 attempt_limit = 5
@@ -131,18 +141,28 @@ class EmailService:
                                     pass
                             break
                     except RateLimitExceeded as rate_err:
-                        time.sleep(sleep_time)
+                        if j < attempt_limit - 1:
+                            time.sleep(sleep_time)
+                            continue
+                        failed_count += 1
+                        if progress:
+                            try:
+                                progress({'index': i, 'email': recipient, 'status': 'failed', 'message': 'Rate limit excedido'})
+                            except Exception:
+                                pass
+                        break
                     except DailyLimitExceeded as daily_err:
                         raise DailyLimitExceeded(f"[ERROR] Daily limit exceeded when sending to: {recipient}: {daily_err}")
                     except Exception as e:
+                        if j < attempt_limit - 1:
+                            continue
                         failed_count += 1
-                        # report failure to progress
                         if progress:
                             try:
                                 progress({'index': i, 'email': recipient, 'status': 'failed', 'message': str(e)})
                             except Exception:
                                 pass
-                        raise Exception(f"An error occurred sending email to {recipient}: {e}")
+                        break
             
             return {
                 'total': len(recipients_data),
