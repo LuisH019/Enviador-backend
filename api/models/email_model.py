@@ -4,6 +4,8 @@ Reutilizado fielmente de Enviador_de_Email/models/email_model.py
 """
 import os
 import mimetypes
+import re
+from html import unescape
 from email.message import EmailMessage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -29,22 +31,48 @@ class EmailModel:
         self.body = body
         self.attachments = attachments or []
 
+    @staticmethod
+    def _html_to_text(value: str) -> str:
+        if value is None:
+            return ''
+
+        text = str(value)
+        text = re.sub(r'<\s*br\s*/?\s*>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</\s*p\s*>', '\n\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = unescape(text)
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    @classmethod
+    def _normalize_subject(cls, subject: str) -> str:
+        plain_subject = '' if subject is None else str(subject)
+        plain_subject = plain_subject.replace('\r', ' ').replace('\n', ' ')
+        plain_subject = re.sub(r'\s+', ' ', plain_subject).strip()
+        return plain_subject
+
     def create_message(self) -> EmailMessage:
         """
         Create an email message from the model's attributes.
         """
         print(f"[DEBUG] Creating message for {self.recipient_address} with {len(self.attachments)} attachments")
         
-        # If there are attachments, use MIMEMultipart
+        subject_text = self._normalize_subject(self.subject)
+        body_html = self.body or ''
+        body_plain = self._html_to_text(body_html)
+
+        # If there are attachments, use MIMEMultipart mixed + alternative
         if self.attachments:
             msg = MIMEMultipart()
-            msg['Subject'] = self.subject
+            msg['Subject'] = subject_text
             msg['From'] = self.sender_address
             msg['To'] = self.recipient_address
-            
-            corpo = MIMEText(self.body, 'html')
-            # Adicionar corpo do email
-            msg.attach(corpo)
+
+            body_part = MIMEMultipart('alternative')
+            body_part.attach(MIMEText(body_plain or '', 'plain', 'utf-8'))
+            body_part.attach(MIMEText(body_html, 'html', 'utf-8'))
+            msg.attach(body_part)
             
             # Adicionar anexos
             for att_idx, attachment in enumerate(self.attachments, 1):
@@ -86,12 +114,13 @@ class EmailModel:
                 if os.path.isfile(attachment_path):
                     self._add_attachment(msg, attachment_path)
         else:
-            # Sem anexos, usar EmailMessage simples
+            # Sem anexos: incluir versões text/plain e text/html
             msg = EmailMessage()
-            msg['Subject'] = self.subject
+            msg['Subject'] = subject_text
             msg['From'] = self.sender_address
             msg['To'] = self.recipient_address
-            msg.set_content(self.body)
+            msg.set_content(body_plain or '', subtype='plain', charset='utf-8')
+            msg.add_alternative(body_html, subtype='html', charset='utf-8')
         
         return msg
     

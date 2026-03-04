@@ -14,6 +14,22 @@ from .models import (
 )
 
 
+def _is_masked_secret(value) -> bool:
+    if value is None:
+        return False
+
+    text = str(value).strip()
+    if not text:
+        return False
+
+    allowed_mask_chars = {'*', '•', '●', '·'}
+    if len(text) >= 4 and all(ch in allowed_mask_chars for ch in text):
+        return True
+
+    lowered = text.lower()
+    return lowered in {'masked', 'hidden', 'not_changed', 'unchanged', 'keep', 'keep_current'}
+
+
 class UserSerializer(serializers.ModelSerializer):
     """Serializer para dados do usuário."""
     
@@ -194,7 +210,9 @@ class GmailSenderSerializer(serializers.ModelSerializer):
         for key, value in validated_data.items():
             setattr(instance, key, value)
         if plain_password is not None:
-            instance.set_app_password(plain_password)
+            plain_password = plain_password.strip() if isinstance(plain_password, str) else plain_password
+            if not _is_masked_secret(plain_password):
+                instance.set_app_password(plain_password)
         instance.save()
         return instance
 
@@ -247,7 +265,9 @@ class WhatsAppSenderSerializer(serializers.ModelSerializer):
         for key, value in validated_data.items():
             setattr(instance, key, value)
         if plain_token is not None:
-            instance.set_access_token(plain_token)
+            plain_token = plain_token.strip() if isinstance(plain_token, str) else plain_token
+            if not _is_masked_secret(plain_token):
+                instance.set_access_token(plain_token)
         instance.save()
         return instance
 

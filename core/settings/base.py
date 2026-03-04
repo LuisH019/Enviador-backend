@@ -31,6 +31,7 @@ THIRD_PARTY_APPS = [
 
 # Local apps
 LOCAL_APPS = [
+    'api',
     'apps.auth_app',
     'apps.senders',
     'apps.recipients',

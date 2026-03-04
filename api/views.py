@@ -12,9 +12,53 @@ from django.urls import reverse
 from django.http import JsonResponse
 import threading
 from apps.auth_app.models import AccountSettings, GmailSender, WhatsAppSender, WhatsAppTemplate
+import logging
 
 # job manager for background runs
 from .services import job_manager
+
+
+logger = logging.getLogger(__name__)
+
+
+def _is_masked_secret(value) -> bool:
+    """Retorna True para placeholders mascarados comuns enviados pelo frontend."""
+    if value is None:
+        return False
+
+    text = str(value).strip()
+    if not text:
+        return False
+
+    # Ex.: ********, ••••••••, ●●●●●●●●
+    allowed_mask_chars = {'*', '•', '●', '·', '•'}
+    if len(text) >= 4 and all(ch in allowed_mask_chars for ch in text):
+        return True
+
+    # Placeholders textuais comuns
+    lowered = text.lower()
+    return lowered in {
+        'masked',
+        'hidden',
+        'not_changed',
+        'unchanged',
+        'keep',
+        'keep_current',
+    }
+
+
+def _sanitize_email_credentials(payload: dict) -> dict:
+    """Normaliza credenciais de e-mail para evitar uso acidental de placeholders."""
+    app_password = payload.get('app_password')
+
+    if isinstance(app_password, str):
+        payload['app_password'] = app_password.strip()
+        app_password = payload['app_password']
+
+    if _is_masked_secret(app_password):
+        payload['app_password'] = ''
+
+    return payload
 
 
 def _apply_account_settings_fallback(payload: dict, user):
@@ -170,11 +214,12 @@ def _resolve_email_sender_payload(payload: dict, user):
         return None, JsonResponse({'error': 'Gmail sender not found'}, status=404)
 
     payload['email_sender'] = gmail_sender.sender_email
-    if not payload.get('app_password'):
-        try:
-            payload['app_password'] = gmail_sender.get_app_password()
-        except Exception:
-            return None, JsonResponse({'error': 'Unable to decrypt app password for sender_id'}, status=400)
+    try:
+        # Com sender_id, a fonte de verdade da credencial é o remetente salvo.
+        # Isso evita uso acidental de fallback (AccountSettings) desatualizado.
+        payload['app_password'] = gmail_sender.get_app_password()
+    except Exception:
+        return None, JsonResponse({'error': 'Unable to decrypt app password for sender_id'}, status=400)
 
     return payload, None
 
@@ -244,10 +289,21 @@ def send_email_view(request):
             return HttpResponseBadRequest('Invalid JSON')
 
     payload['channel'] = 'email'
+    payload = _sanitize_email_credentials(payload)
     payload = _apply_account_settings_fallback(payload, request.user)
+    payload = _sanitize_email_credentials(payload)
     payload, sender_error = _resolve_email_sender_payload(payload, request.user)
     if sender_error is not None:
         return sender_error
+
+    credential_source = 'sender_id' if payload.get('sender_id') else 'payload_or_account_settings'
+    logger.info(
+        "[SEND_EMAIL] credential_source=%s sender_id=%s email_sender=%s app_password_len=%s",
+        credential_source,
+        payload.get('sender_id'),
+        payload.get('email_sender'),
+        len(payload.get('app_password') or ''),
+    )
 
     # Validate email-specific required fields
     email_sender = payload.get('email_sender')
